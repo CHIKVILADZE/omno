@@ -1,55 +1,100 @@
-// Load environment variables from .env file
 require('dotenv').config();
-
 const express = require('express');
-const bodyParser = require('body-parser');
-const cors = require('cors');
-const Stripe = require('stripe');
-require('dotenv').config();
-
 const app = express();
-const port = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5000;
+const cors = require('cors');
+const axios = require('axios');
 
-// Stripe API setup
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-app.use(cors());
-app.use(bodyParser.json());
+app.use(
+  cors({
+    origin: 'http://localhost:3000',
+    credentials: true,
+  })
+);
+app.use(express.json());
 
-// Mock function to create Omno transaction
-const createOmnoTransaction = async (paymentIntent) => {
-  // Implement logic to create Omno transaction here
-  return { id: 'mocked-transaction-id', status: 'success' };
-};
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
-// Endpoint to create a transaction
-app.post('/createTransaction', async (req, res) => {
+app.post('/create-payment-intent', async (req, res) => {
+  const { amount, currency } = req.body;
+
   try {
-    const { amount, currency, cardToken, orderId } = req.body;
-
-    // Create a Payment Intent with the provided card token
     const paymentIntent = await stripe.paymentIntents.create({
       amount: amount,
       currency: currency,
-      payment_method: cardToken,
-      confirm: true,
-      description: `Payment for order ${orderId}`,
-      return_url: 'http://localhost:3000/payment/success', // Specify your return URL here
     });
 
-    console.log('Payment Intent created:', paymentIntent);
-
-    // Call function to create Omno transaction with payment intent details
-    const transactionResponse = await createOmnoTransaction(paymentIntent);
-
-    // Return transaction details in the response
-    res.status(200).json({ transaction: transactionResponse });
+    console.log("PaymentIntent:", paymentIntent);
+    res.json({ clientSecret: paymentIntent.client_secret });
   } catch (error) {
-    console.error('Error creating transaction:', error);
-    res.status(500).json({ error: 'Error creating transaction' });
+    res.status(500).json({ error: error.message });
   }
 });
 
-app.listen(port, () => {
-  console.log(`Server is running on port ${port}`);
+app.post('/get-oauth-token', async (req, res) => {
+  try {
+    const clientId = process.env.OMNO_CLIENT_ID;
+    const clientSecret = process.env.OMNO_CLIENT_SECRET;
+    const tokenEndpoint = 'https://sso.omno.com/realms/omno/protocol/openid-connect/token';
+
+    const response = await axios.post(tokenEndpoint, {
+      grant_type: 'client_credentials',
+      client_id: clientId,
+      client_secret: clientSecret,
+    }, {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      }
+    });
+
+    res.json(response.data);
+  } catch (error) {
+    console.error('Error fetching access token:', error.message);
+    res.status(500).json({ error: 'Failed to fetch access token' });
+  }
+});
+
+app.post('/transaction/create', async (req, res) => {
+  const paymentDetails = req.body;
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader) {
+    return res.status(401).json({ error: 'Authorization header missing' });
+  }
+
+  const token = authHeader.split(' ')[1]; 
+
+  
+
+  try {
+  
+    const response = await axios.post('https://api.omno.com/transaction/create', paymentDetails, {
+      headers: {
+        'Content-Type': 'application/json',
+        "Accept": "*/*",
+        'Authorization': `Bearer ${token}`
+      },
+    });
+
+    console.log('OMNO API Response:', response.data);
+  } catch (error) {
+    console.error('Error creating payment transaction:', error);
+
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    if (error.response) {
+      console.error('OMNO API Error Response Data:', error.response.data);
+      console.error('OMNO API Error Response Status:', error.response.status);
+      console.error('OMNO API Error Response Headers:', error.response.headers);
+    }
+
+    res.status(500).json({ error: 'Failed to create payment transaction' });
+  }
+});
+
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
 });
